@@ -57,6 +57,18 @@ from typing import Optional
 
 WINDOWS_ISO_DOWNLOAD_URL = "https://www.microsoft.com/software-download/windows11"
 
+# [DE] Apps, die per Doppelklick/Finder gestartet werden, erben nicht das
+# PATH der Login-Shell und finden Homebrew-Tools (z.B. wimlib-imagex) daher
+# oft nicht, obwohl sie installiert sind. Deshalb werden die üblichen
+# Homebrew-bin-Verzeichnisse hier explizit ergänzt.
+# [EN] Apps launched via double-click/Finder don't inherit the login
+# shell's PATH, so Homebrew tools (e.g. wimlib-imagex) are often not found
+# even though they're installed. Explicitly add the common Homebrew bin
+# directories here.
+for _homebrew_bin in ("/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"):
+    if _homebrew_bin not in os.environ.get("PATH", "").split(os.pathsep):
+        os.environ["PATH"] = _homebrew_bin + os.pathsep + os.environ.get("PATH", "")
+
 
 class _OperationCancelled(Exception):
     """[DE] Interne Signal-Exception für einen vom Benutzer abgebrochenen Vorgang.
