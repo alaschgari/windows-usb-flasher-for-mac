@@ -53,8 +53,14 @@ import threading
 import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from typing import Optional
 
 WINDOWS_ISO_DOWNLOAD_URL = "https://www.microsoft.com/software-download/windows11"
+
+
+class _OperationCancelled(Exception):
+    """[DE] Interne Signal-Exception für einen vom Benutzer abgebrochenen Vorgang.
+    [EN] Internal signal exception for a user-cancelled operation."""
 
 
 # --------------------------------------------------------------------------
@@ -69,6 +75,15 @@ TRANSLATIONS = {
         "browse": "Durchsuchen…",
         "download_iso": "ISO herunterladen…",
         "download_iso_opened": "Offizielle Microsoft-Downloadseite im Browser geöffnet.",
+        "cancel_button": "Abbrechen",
+        "cancelling": "Breche Vorgang ab…",
+        "cancelled_log": "Vorgang abgebrochen.",
+        "volume_not_found": "Formatierter Volume 'WINSETUP' wurde nicht gefunden.",
+        "step_space_check": "Prüfe verfügbaren Speicherplatz auf dem Stick…",
+        "err_insufficient_space": (
+            "Nicht genug Speicherplatz auf dem USB-Stick: "
+            "benötigt ca. {needed}, verfügbar {available}."
+        ),
         "section_usb": "2. Ziel-USB-Stick",
         "refresh": "Aktualisieren",
         "warn_data_loss": "⚠️ Alle Daten auf dem gewählten Datenträger werden gelöscht!",
@@ -131,6 +146,15 @@ TRANSLATIONS = {
         "browse": "Browse…",
         "download_iso": "Download ISO…",
         "download_iso_opened": "Official Microsoft download page opened in your browser.",
+        "cancel_button": "Cancel",
+        "cancelling": "Cancelling…",
+        "cancelled_log": "Operation cancelled.",
+        "volume_not_found": "Formatted volume 'WINSETUP' was not found.",
+        "step_space_check": "Checking available space on the USB stick…",
+        "err_insufficient_space": (
+            "Not enough space on the USB stick: "
+            "needed approx. {needed}, available {available}."
+        ),
         "section_usb": "2. Target USB Stick",
         "refresh": "Refresh",
         "warn_data_loss": "⚠️ All data on the selected drive will be erased!",
@@ -286,6 +310,59 @@ def _format_size(size_bytes: int) -> str:
     return f"{gb:.1f} GB"
 
 
+def find_volume_mount_point(disk_id: str, volume_name: str) -> Optional[str]:
+    """
+    [DE] Findet den tatsächlichen Mount-Pfad eines frisch formatierten
+    Volumes anhand seines Namens, statt einen festen Pfad wie
+    '/Volumes/WINSETUP' anzunehmen (der bei Namenskollision mit einem
+    anderen Datenträger falsch wäre).
+    [EN] Finds the actual mount path of a freshly formatted volume by its
+    name, instead of assuming a fixed path like '/Volumes/WINSETUP' (which
+    would be wrong if another mounted disk already used that name).
+    """
+    import plistlib
+
+    result = subprocess.run(
+        ["diskutil", "list", "-plist", disk_id],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        data = plistlib.loads(result.stdout.encode("utf-8"))
+    except Exception:
+        return None
+
+    partition_ids = []
+    for disk in data.get("AllDisksAndPartitions", []):
+        for partition in disk.get("Partitions", []):
+            identifier = partition.get("DeviceIdentifier")
+            if identifier:
+                partition_ids.append(identifier)
+
+    for identifier in partition_ids:
+        info = subprocess.run(
+            ["diskutil", "info", "-plist", identifier],
+            capture_output=True, text=True
+        )
+        if info.returncode != 0:
+            continue
+        try:
+            partition_info = plistlib.loads(info.stdout.encode("utf-8"))
+        except Exception:
+            continue
+        if partition_info.get("VolumeName") == volume_name:
+            return partition_info.get("MountPoint")
+    return None
+
+
+def get_free_space_bytes(mount_point: str) -> int:
+    """[DE] Gibt den freien Speicherplatz (Bytes) am Mount-Pfad zurück.
+    [EN] Returns the free space (bytes) at the given mount point."""
+    stat = os.statvfs(mount_point)
+    return stat.f_bavail * stat.f_frsize
+
+
 # --------------------------------------------------------------------------
 # GUI
 # --------------------------------------------------------------------------
@@ -298,6 +375,7 @@ class WindowsUSBFlasherApp:
         self.iso_path = tk.StringVar(value="")
         self.selected_disk = tk.StringVar(value="")
         self.disk_map = {}  # Anzeigetext -> Identifier / display text -> identifier
+        self.cancel_event = threading.Event()
 
         self.root.geometry("640x600")
         self.root.minsize(600, 520)
@@ -335,6 +413,7 @@ class WindowsUSBFlasherApp:
         self.refresh_button.configure(text=self.t("refresh"))
         self.warn_label.configure(text=self.t("warn_data_loss"))
         self.create_button.configure(text=self.t("create_button"))
+        self.cancel_button.configure(text=self.t("cancel_button"))
         self.progress_frame.configure(text=self.t("section_progress"))
 
     # ---------------------------------------------------------------- UI --
@@ -401,11 +480,19 @@ class WindowsUSBFlasherApp:
         self.warn_label.pack(anchor="w", pady=(8, 0))
 
         # --- Erstellen-Button / Create button ---
+        button_row = ttk.Frame(outer)
+        button_row.pack(fill="x", pady=(4, 16))
+
         self.create_button = ttk.Button(
-            outer, text="", style="Big.TButton",
+            button_row, text="", style="Big.TButton",
             command=self.on_create_clicked
         )
-        self.create_button.pack(fill="x", pady=(4, 16))
+        self.create_button.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self.cancel_button = ttk.Button(
+            button_row, text="", command=self.on_cancel_clicked, state="disabled"
+        )
+        self.cancel_button.pack(side="left")
 
         # --- Fortschritt / Progress ---
         self.progress_frame = ttk.LabelFrame(outer, text="", padding=12)
@@ -501,12 +588,23 @@ class WindowsUSBFlasherApp:
             return
 
         self.create_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
+        self.cancel_event.clear()
         self.set_progress(0)
 
         thread = threading.Thread(
             target=self.run_flash_process, args=(iso, disk_id), daemon=True
         )
         thread.start()
+
+    def on_cancel_clicked(self):
+        self.cancel_event.set()
+        self.log(self.t("cancelling"))
+        self.cancel_button.configure(state="disabled")
+
+    def _check_cancelled(self):
+        if self.cancel_event.is_set():
+            raise _OperationCancelled()
 
     # ------------------------------------------------------- Worker Thread --
 
@@ -519,26 +617,54 @@ class WindowsUSBFlasherApp:
                 "diskutil", "partitionDisk", f"/dev/{disk_id}",
                 "GPT", "FAT32", "WINSETUP", "0b"
             ])
+            self.set_progress(10)
+            self._check_cancelled()
+
+            # Schritt 1b: tatsächlichen Mount-Pfad des Volumes ermitteln
+            # Step 1b: determine the actual mount path of the volume
+            usb_mount_path = find_volume_mount_point(disk_id, "WINSETUP")
+            if not usb_mount_path:
+                raise RuntimeError(self.t("volume_not_found"))
             self.set_progress(15)
 
             # Schritt 2: ISO mounten / Step 2: mount ISO
             self.log(self.t("step_mount", iso_path=iso_path))
             mounted_iso_path = self._mount_iso(iso_path)
             self.log(self.t("step_mounted", mount_path=mounted_iso_path))
+            self.set_progress(22)
+            self._check_cancelled()
+
+            # Schritt 2b: Speicherplatz prüfen / Step 2b: check free space
+            self.log(self.t("step_space_check"))
+            iso_size = os.path.getsize(iso_path)
+            free_space = get_free_space_bytes(usb_mount_path)
+            # [DE] install.wim wird durch split-.swm-Dateien ersetzt, keine
+            # zusätzliche Kompression -> Größe der ISO ist eine sichere obere
+            # Schätzung für den benötigten Platz.
+            # [EN] install.wim is replaced by split .swm files without extra
+            # compression -> the ISO size is a safe upper-bound estimate.
+            if free_space < iso_size:
+                raise RuntimeError(self.t(
+                    "err_insufficient_space",
+                    needed=_format_size(iso_size),
+                    available=_format_size(free_space),
+                ))
             self.set_progress(25)
+            self._check_cancelled()
 
             # Schritt 3: rsync ohne install.wim / Step 3: rsync excluding install.wim
             self.log(self.t("step_copy"))
             self._run_command([
                 "rsync", "-avh", "--progress",
                 "--exclude=/sources/install.wim",
-                f"{mounted_iso_path}/", "/Volumes/WINSETUP/"
+                f"{mounted_iso_path}/", f"{usb_mount_path}/"
             ], log_output=True)
             self.set_progress(65)
+            self._check_cancelled()
 
             # Schritt 4: install.wim splitten / Step 4: split install.wim
             wim_source = os.path.join(mounted_iso_path, "sources", "install.wim")
-            dest_dir = "/Volumes/WINSETUP/sources"
+            dest_dir = os.path.join(usb_mount_path, "sources")
             os.makedirs(dest_dir, exist_ok=True)
             swm_dest = os.path.join(dest_dir, "install.swm")
 
@@ -577,6 +703,8 @@ class WindowsUSBFlasherApp:
                 self.t("success_title"), self.t("success_body")
             ))
 
+        except _OperationCancelled:
+            self.log(self.t("cancelled_log"))
         except subprocess.CalledProcessError as e:
             error_output = (e.stderr or e.stdout or str(e)).strip()
             self.log(self.t("error_command_log", cmd=" ".join(e.cmd)))
@@ -593,6 +721,7 @@ class WindowsUSBFlasherApp:
                 subprocess.run(["hdiutil", "unmount", mounted_iso_path],
                                 capture_output=True, text=True)
             self.root.after(0, lambda: self.create_button.configure(state="normal"))
+            self.root.after(0, lambda: self.cancel_button.configure(state="disabled"))
 
     # ------------------------------------------------------------ Helpers --
 

@@ -67,7 +67,10 @@ In der GUI:
 2. Ziel-USB-Stick aus der Dropdown-Liste wählen (nur externe, entfernbare
    Datenträger werden angezeigt; „Aktualisieren" lädt die Liste neu).
 3. Auf „USB-Stick erstellen" klicken und die Sicherheitsabfrage bestätigen.
-4. Fortschritt und Status im Log-Fenster verfolgen.
+4. Fortschritt und Status im Log-Fenster verfolgen. Über „Abbrechen" lässt
+   sich der Vorgang zwischen den einzelnen Schritten stoppen (ein bereits
+   laufender Kopier-/Split-Befehl wird dabei zu Ende geführt, bevor der
+   Abbruch greift).
 
 ### ⚠️ Achtung
 
@@ -93,6 +96,27 @@ wimlib-imagex info /Volumes/WINSETUP/sources/install.swm
 
 Der zuverlässigste Test bleibt jedoch der reale Boot-Versuch an einem PC
 oder in einer UEFI-fähigen VM.
+
+### Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Deckt die reinen Hilfsfunktionen ab (Parsing, Speicherplatz-Berechnung,
+Volume-Erkennung); die tkinter-GUI selbst wird nicht automatisiert getestet.
+
+### Eigenständige macOS-App bauen (optional)
+
+Mit [py2app](https://py2app.readthedocs.io/) lässt sich ein `.app`-Bundle
+zum Doppelklick-Start erzeugen:
+
+```bash
+pip3 install py2app
+python3 setup.py py2app
+```
+
+Die fertige App liegt danach in `dist/Windows USB Flasher.app`.
 
 ### Lizenz
 
@@ -157,7 +181,9 @@ In the GUI:
 2. Select the target USB stick from the dropdown list (only external,
    removable drives are shown; "Refresh" reloads the list).
 3. Click "Create USB Stick" and confirm the safety prompt.
-4. Follow progress and status in the log window.
+4. Follow progress and status in the log window. Click "Cancel" to stop the
+   process between steps (a command that's already running, like copying
+   or splitting, will finish first before the cancellation takes effect).
 
 ### ⚠️ Warning
 
@@ -183,6 +209,27 @@ wimlib-imagex info /Volumes/WINSETUP/sources/install.swm
 
 The most reliable test, however, remains an actual boot attempt on a PC
 or in a UEFI-capable VM.
+
+### Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Covers the pure helper functions (parsing, free-space calculation, volume
+detection); the tkinter GUI itself is not covered by automated tests.
+
+### Building a standalone macOS app (optional)
+
+You can build a double-clickable `.app` bundle with
+[py2app](https://py2app.readthedocs.io/):
+
+```bash
+pip3 install py2app
+python3 setup.py py2app
+```
+
+The resulting app is created at `dist/Windows USB Flasher.app`.
 
 ### License
 
