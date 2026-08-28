@@ -96,7 +96,7 @@ oder in einer UEFI-fähigen VM.
 
 ### Lizenz
 
-Privates Projekt, keine Lizenzangabe.
+MIT-Lizenz, siehe [LICENSE](LICENSE).
 
 ---
 
@@ -186,4 +186,4 @@ or in a UEFI-capable VM.
 
 ### License
 
-Private project, no license specified.
+MIT License, see [LICENSE](LICENSE).

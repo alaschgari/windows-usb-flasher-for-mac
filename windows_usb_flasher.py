@@ -50,8 +50,11 @@ import re
 import shutil
 import subprocess
 import threading
+import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+
+WINDOWS_ISO_DOWNLOAD_URL = "https://www.microsoft.com/software-download/windows11"
 
 
 # --------------------------------------------------------------------------
@@ -64,6 +67,8 @@ TRANSLATIONS = {
         "language_label": "Sprache",
         "section_iso": "1. Windows-ISO-Datei",
         "browse": "Durchsuchen…",
+        "download_iso": "ISO herunterladen…",
+        "download_iso_opened": "Offizielle Microsoft-Downloadseite im Browser geöffnet.",
         "section_usb": "2. Ziel-USB-Stick",
         "refresh": "Aktualisieren",
         "warn_data_loss": "⚠️ Alle Daten auf dem gewählten Datenträger werden gelöscht!",
@@ -124,6 +129,8 @@ TRANSLATIONS = {
         "language_label": "Language",
         "section_iso": "1. Windows ISO File",
         "browse": "Browse…",
+        "download_iso": "Download ISO…",
+        "download_iso_opened": "Official Microsoft download page opened in your browser.",
         "section_usb": "2. Target USB Stick",
         "refresh": "Refresh",
         "warn_data_loss": "⚠️ All data on the selected drive will be erased!",
@@ -323,6 +330,7 @@ class WindowsUSBFlasherApp:
         self.language_frame_label.configure(text=self.t("language_label"))
         self.iso_frame.configure(text=self.t("section_iso"))
         self.browse_button.configure(text=self.t("browse"))
+        self.download_iso_button.configure(text=self.t("download_iso"))
         self.usb_frame.configure(text=self.t("section_usb"))
         self.refresh_button.configure(text=self.t("refresh"))
         self.warn_label.configure(text=self.t("warn_data_loss"))
@@ -374,7 +382,9 @@ class WindowsUSBFlasherApp:
         self.iso_entry = ttk.Entry(iso_row, textvariable=self.iso_path, state="readonly")
         self.iso_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.browse_button = ttk.Button(iso_row, text="", command=self.select_iso)
-        self.browse_button.pack(side="left")
+        self.browse_button.pack(side="left", padx=(0, 8))
+        self.download_iso_button = ttk.Button(iso_row, text="", command=self.open_iso_download_page)
+        self.download_iso_button.pack(side="left")
 
         # --- USB-Auswahl / USB selection ---
         self.usb_frame = ttk.LabelFrame(outer, text="", padding=12)
@@ -442,6 +452,10 @@ class WindowsUSBFlasherApp:
         )
         if path:
             self.iso_path.set(path)
+
+    def open_iso_download_page(self):
+        webbrowser.open(WINDOWS_ISO_DOWNLOAD_URL)
+        self.log(self.t("download_iso_opened"))
 
     def refresh_disks(self):
         self.log(self.t("searching_disks"))
