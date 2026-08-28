@@ -1,34 +1,48 @@
 #!/usr/bin/env python3
 """
-Windows USB Flasher für macOS
-==============================
+Windows USB Flasher for macOS / für macOS
+==========================================
 
-Erstellt einen bootfähigen Windows-Installations-USB-Stick aus einer
+[EN] Creates a bootable Windows installation USB stick from a Windows ISO
+file. Solves the problem that a Windows ISO cannot simply be copied 1:1
+(byte-for-byte, like with balenaEtcher) to a USB stick on the Mac, because
+modern Windows ISOs contain an `install.wim` file that can be larger than
+4 GB and therefore doesn't fit on a FAT32 file system (FAT32 is required
+for UEFI boot, though).
+
+[DE] Erstellt einen bootfähigen Windows-Installations-USB-Stick aus einer
 Windows-ISO-Datei. Löst das Problem, dass eine Windows-ISO auf dem Mac
 nicht einfach 1:1 (byte-für-byte, wie bei balenaEtcher) auf einen USB-Stick
 kopiert werden kann, weil moderne Windows-ISOs eine `install.wim`-Datei
 enthalten, die größer als 4 GB sein kann und damit nicht auf ein
 FAT32-Dateisystem passt (FAT32 ist aber für UEFI-Boot erforderlich).
 
-Die Lösung:
-  1. USB-Stick mit GPT-Partitionstabelle und FAT32 formatieren.
-  2. ISO mounten.
-  3. Alle Dateien AUSSER install.wim per rsync auf den Stick kopieren.
-  4. install.wim mit wimlib-imagex in mehrere .swm-Dateien < 4 GB splitten
+Solution / Lösung:
+  1. Format USB stick with GPT partition table and FAT32.
+     USB-Stick mit GPT-Partitionstabelle und FAT32 formatieren.
+  2. Mount ISO. / ISO mounten.
+  3. Copy all files EXCEPT install.wim to the stick via rsync.
+     Alle Dateien AUSSER install.wim per rsync auf den Stick kopieren.
+  4. Split install.wim into multiple .swm files < 4 GB with wimlib-imagex
+     and write them directly to the stick.
+     install.wim mit wimlib-imagex in mehrere .swm-Dateien < 4 GB splitten
      und direkt auf den Stick schreiben.
-  5. ISO und USB-Stick sauber auswerfen.
+  5. Cleanly eject ISO and USB stick. / ISO und USB-Stick sauber auswerfen.
 
-Voraussetzung:
+Requirements / Voraussetzung:
   - macOS
-  - Homebrew-Paket `wimlib` muss installiert sein:
+  - Homebrew package `wimlib` must be installed / muss installiert sein:
         brew install wimlib
-    (stellt das Kommandozeilen-Tool `wimlib-imagex` bereit)
+    (provides the `wimlib-imagex` command line tool /
+     stellt das Kommandozeilen-Tool `wimlib-imagex` bereit)
 
-Ausführen:
+Run / Ausführen:
     python3 windows_usb_flasher.py
 
-Hinweis: Für diskutil-Operationen auf dem Datenträger können Sie zur
-Eingabe Ihres macOS-Passworts aufgefordert werden (sudo/Systemdialog).
+Note / Hinweis: For diskutil operations you may be prompted for your
+macOS password (sudo/system dialog). / Für diskutil-Operationen auf dem
+Datenträger können Sie zur Eingabe Ihres macOS-Passworts aufgefordert
+werden (sudo/Systemdialog).
 """
 
 import os
@@ -41,35 +55,165 @@ from tkinter import ttk, filedialog, messagebox
 
 
 # --------------------------------------------------------------------------
-# Hilfsfunktionen (Backend-Logik)
+# i18n / Übersetzungen
+# --------------------------------------------------------------------------
+
+TRANSLATIONS = {
+    "de": {
+        "app_title": "Windows USB Flasher",
+        "language_label": "Sprache",
+        "section_iso": "1. Windows-ISO-Datei",
+        "browse": "Durchsuchen…",
+        "section_usb": "2. Ziel-USB-Stick",
+        "refresh": "Aktualisieren",
+        "warn_data_loss": "⚠️ Alle Daten auf dem gewählten Datenträger werden gelöscht!",
+        "create_button": "USB-Stick erstellen",
+        "section_progress": "Fortschritt",
+        "err_wimlib_log_1": "FEHLER: 'wimlib-imagex' wurde nicht gefunden.",
+        "err_wimlib_log_2": "Bitte installieren Sie es zuerst über Homebrew:",
+        "err_wimlib_log_3": "    brew install wimlib",
+        "err_wimlib_title": "Voraussetzung fehlt",
+        "err_wimlib_body": (
+            "Das Kommandozeilen-Tool 'wimlib-imagex' wurde nicht gefunden.\n\n"
+            "Bitte installieren Sie es zuerst mit Homebrew:\n\n"
+            "    brew install wimlib\n\n"
+            "und starten Sie diese Anwendung danach erneut."
+        ),
+        "select_iso_title": "Windows-ISO auswählen",
+        "iso_filetype": "ISO-Dateien",
+        "searching_disks": "Suche nach externen USB-Datenträgern…",
+        "disks_found": "{count} Datenträger gefunden.",
+        "no_disks_found": "Keine externen, entfernbaren Datenträger gefunden.",
+        "unknown_disk_name": "Unbekannt",
+        "missing_title": "Fehlt",
+        "missing_iso": "Bitte zuerst eine Windows-ISO-Datei auswählen.",
+        "missing_disk": "Bitte zuerst einen Ziel-USB-Stick auswählen.",
+        "confirm_title": "Achtung — Datenverlust!",
+        "confirm_body": (
+            "Alle Daten auf '/dev/{disk_id}' ({disk_label}) werden "
+            "unwiderruflich GELÖSCHT.\n\n"
+            "Möchten Sie wirklich fortfahren?"
+        ),
+        "user_cancelled": "Vorgang vom Benutzer abgebrochen.",
+        "step_format": "Formatiere /dev/{disk_id} (GPT, FAT32, Name 'WINSETUP')…",
+        "step_mount": "Mounte ISO: {iso_path}…",
+        "step_mounted": "ISO gemountet unter: {mount_path}",
+        "step_copy": "Kopiere Dateien (außer install.wim) auf den USB-Stick…",
+        "step_split": "Spalte install.wim in Teile < 3.8 GB (wimlib-imagex split)…",
+        "step_verify": "Verifiziere install.swm (wimlib-imagex info)…",
+        "step_verify_ok": "Verifikation erfolgreich: Split-WIM-Dateien sind konsistent.",
+        "step_verify_warn": "WARNUNG: Verifikation der install.swm fehlgeschlagen!",
+        "step_verify_fail_msg": (
+            "Die install.swm-Dateien konnten nicht verifiziert werden. "
+            "Der USB-Stick ist möglicherweise nicht bootfähig."
+        ),
+        "step_unmount_iso": "Werfe ISO-Image aus…",
+        "step_eject_usb": "Werfe USB-Stick /dev/{disk_id} sicher aus…",
+        "step_done": "Fertig! Der Windows-Installations-USB-Stick wurde erfolgreich erstellt.",
+        "success_title": "Erfolg",
+        "success_body": "Der bootfähige Windows-USB-Stick wurde erfolgreich erstellt!",
+        "error_command_log": "FEHLER bei Befehl: {cmd}",
+        "error_title": "Fehler",
+        "error_command_body": "Ein Befehl ist fehlgeschlagen:\n\n{error}",
+        "error_unexpected_log": "Unerwarteter Fehler: {error}",
+        "mount_path_not_found": "Mount-Pfad der ISO konnte nicht ermittelt werden.",
+        "usb_device_label": "USB-Datenträger",
+    },
+    "en": {
+        "app_title": "Windows USB Flasher",
+        "language_label": "Language",
+        "section_iso": "1. Windows ISO File",
+        "browse": "Browse…",
+        "section_usb": "2. Target USB Stick",
+        "refresh": "Refresh",
+        "warn_data_loss": "⚠️ All data on the selected drive will be erased!",
+        "create_button": "Create USB Stick",
+        "section_progress": "Progress",
+        "err_wimlib_log_1": "ERROR: 'wimlib-imagex' was not found.",
+        "err_wimlib_log_2": "Please install it first via Homebrew:",
+        "err_wimlib_log_3": "    brew install wimlib",
+        "err_wimlib_title": "Requirement Missing",
+        "err_wimlib_body": (
+            "The command line tool 'wimlib-imagex' was not found.\n\n"
+            "Please install it first with Homebrew:\n\n"
+            "    brew install wimlib\n\n"
+            "and then restart this application."
+        ),
+        "select_iso_title": "Select Windows ISO",
+        "iso_filetype": "ISO files",
+        "searching_disks": "Searching for external USB drives…",
+        "disks_found": "{count} drive(s) found.",
+        "no_disks_found": "No external, removable drives found.",
+        "unknown_disk_name": "Unknown",
+        "missing_title": "Missing",
+        "missing_iso": "Please select a Windows ISO file first.",
+        "missing_disk": "Please select a target USB stick first.",
+        "confirm_title": "Warning — Data Loss!",
+        "confirm_body": (
+            "All data on '/dev/{disk_id}' ({disk_label}) will be "
+            "PERMANENTLY ERASED.\n\n"
+            "Do you really want to continue?"
+        ),
+        "user_cancelled": "Operation cancelled by user.",
+        "step_format": "Formatting /dev/{disk_id} (GPT, FAT32, name 'WINSETUP')…",
+        "step_mount": "Mounting ISO: {iso_path}…",
+        "step_mounted": "ISO mounted at: {mount_path}",
+        "step_copy": "Copying files (except install.wim) to the USB stick…",
+        "step_split": "Splitting install.wim into parts < 3.8 GB (wimlib-imagex split)…",
+        "step_verify": "Verifying install.swm (wimlib-imagex info)…",
+        "step_verify_ok": "Verification successful: split WIM files are consistent.",
+        "step_verify_warn": "WARNING: verification of install.swm failed!",
+        "step_verify_fail_msg": (
+            "The install.swm files could not be verified. "
+            "The USB stick may not be bootable."
+        ),
+        "step_unmount_iso": "Ejecting ISO image…",
+        "step_eject_usb": "Safely ejecting USB stick /dev/{disk_id}…",
+        "step_done": "Done! The Windows installation USB stick was created successfully.",
+        "success_title": "Success",
+        "success_body": "The bootable Windows USB stick was created successfully!",
+        "error_command_log": "ERROR running command: {cmd}",
+        "error_title": "Error",
+        "error_command_body": "A command failed:\n\n{error}",
+        "error_unexpected_log": "Unexpected error: {error}",
+        "mount_path_not_found": "Could not determine the ISO's mount path.",
+        "usb_device_label": "USB Drive",
+    },
+}
+
+
+# --------------------------------------------------------------------------
+# Hilfsfunktionen / Helper functions (Backend-Logik / backend logic)
 # --------------------------------------------------------------------------
 
 def check_wimlib_installed() -> bool:
-    """Prüft, ob wimlib-imagex im PATH verfügbar ist."""
+    """[DE] Prüft, ob wimlib-imagex im PATH verfügbar ist.
+    [EN] Checks whether wimlib-imagex is available on the PATH."""
     return shutil.which("wimlib-imagex") is not None
 
 
-def list_removable_disks():
+def list_removable_disks(unknown_label="Unknown", usb_label="USB Drive"):
     """
-    Liest `diskutil list` aus und gibt eine Liste von externen,
+    [DE] Liest `diskutil list` aus und gibt eine Liste von externen,
     entfernbaren (removable) Datenträgern zurück.
+    [EN] Reads `diskutil list` and returns a list of external, removable
+    disks.
 
-    Rückgabe: Liste von Dicts: {"identifier": "disk2", "size": "15.5 GB", "name": "..."}
+    Rückgabe / Return: list of dicts:
+        {"identifier": "disk2", "size": "15.5 GB", "name": "..."}
     """
     result = subprocess.run(
         ["diskutil", "list", "-plist", "external", "physical"],
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        # Fallback auf Text-Parsing, falls -plist nicht unterstützt wird
-        return _list_removable_disks_text_fallback()
+        return _list_removable_disks_text_fallback(usb_label)
 
-    # plistlib-Parsing der externen physischen Datenträger
     import plistlib
     try:
         data = plistlib.loads(result.stdout.encode("utf-8"))
     except Exception:
-        return _list_removable_disks_text_fallback()
+        return _list_removable_disks_text_fallback(usb_label)
 
     disks = []
     for disk_identifier in data.get("WholeDisks", []):
@@ -90,7 +234,7 @@ def list_removable_disks():
         if removable and not internal:
             size_bytes = disk_info.get("TotalSize", 0)
             size_str = _format_size(size_bytes)
-            name = disk_info.get("MediaName", "Unbekannt")
+            name = disk_info.get("MediaName", unknown_label)
             disks.append({
                 "identifier": disk_identifier,
                 "size": size_str,
@@ -99,8 +243,9 @@ def list_removable_disks():
     return disks
 
 
-def _list_removable_disks_text_fallback():
-    """Einfacher Text-Parser für `diskutil list external physical` als Fallback."""
+def _list_removable_disks_text_fallback(usb_label="USB Drive"):
+    """[DE] Einfacher Text-Parser als Fallback.
+    [EN] Simple text parser fallback."""
     result = subprocess.run(
         ["diskutil", "list", "external", "physical"],
         capture_output=True, text=True
@@ -117,18 +262,19 @@ def _list_removable_disks_text_fallback():
             continue
         if current_disk and re.match(r"^\s*0:\s+GUID_partition_scheme", line):
             size_match = re.search(r"\*([\d.]+\s*\w+)", line)
-            size_str = size_match.group(1) if size_match else "unbekannt"
+            size_str = size_match.group(1) if size_match else "unknown"
             disks.append({
                 "identifier": current_disk,
                 "size": size_str,
-                "name": "USB-Datenträger",
+                "name": usb_label,
             })
             current_disk = None
     return disks
 
 
 def _format_size(size_bytes: int) -> str:
-    """Formatiert Bytes in eine lesbare Größe (GB)."""
+    """[DE] Formatiert Bytes in eine lesbare Größe (GB).
+    [EN] Formats bytes into a human-readable size (GB)."""
     gb = size_bytes / (1000 ** 3)
     return f"{gb:.1f} GB"
 
@@ -140,22 +286,48 @@ def _format_size(size_bytes: int) -> str:
 class WindowsUSBFlasherApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Windows USB Flasher")
-        self.root.geometry("640x560")
-        self.root.minsize(600, 500)
+        self.lang = "de"
 
         self.iso_path = tk.StringVar(value="")
         self.selected_disk = tk.StringVar(value="")
-        self.disk_map = {}  # Anzeigetext -> Identifier (z.B. "disk2")
+        self.disk_map = {}  # Anzeigetext -> Identifier / display text -> identifier
+
+        self.root.geometry("640x600")
+        self.root.minsize(600, 520)
 
         self._setup_style()
         self._build_ui()
+        self._apply_language()
 
-        # Voraussetzung prüfen
+        # Voraussetzung prüfen / check requirement
         if not check_wimlib_installed():
             self._show_wimlib_missing_error()
         else:
             self.refresh_disks()
+
+    # -------------------------------------------------------------- i18n --
+
+    def t(self, key: str, **kwargs) -> str:
+        text = TRANSLATIONS[self.lang][key]
+        return text.format(**kwargs) if kwargs else text
+
+    def on_language_changed(self, event=None):
+        label = self.language_var.get()
+        self.lang = "en" if label == "English" else "de"
+        self._apply_language()
+        self.refresh_disks()
+
+    def _apply_language(self):
+        self.root.title(self.t("app_title"))
+        self.title_label.configure(text=self.t("app_title"))
+        self.language_frame_label.configure(text=self.t("language_label"))
+        self.iso_frame.configure(text=self.t("section_iso"))
+        self.browse_button.configure(text=self.t("browse"))
+        self.usb_frame.configure(text=self.t("section_usb"))
+        self.refresh_button.configure(text=self.t("refresh"))
+        self.warn_label.configure(text=self.t("warn_data_loss"))
+        self.create_button.configure(text=self.t("create_button"))
+        self.progress_frame.configure(text=self.t("section_progress"))
 
     # ---------------------------------------------------------------- UI --
 
@@ -174,51 +346,65 @@ class WindowsUSBFlasherApp:
         outer = ttk.Frame(self.root, padding=20)
         outer.pack(fill="both", expand=True)
 
-        title = ttk.Label(outer, text="Windows USB Flasher", style="Title.TLabel")
-        title.pack(anchor="w", pady=(0, 15))
+        # --- Titelzeile mit Sprachauswahl / Title row with language switch ---
+        header_row = ttk.Frame(outer)
+        header_row.pack(fill="x", pady=(0, 15))
 
-        # --- ISO-Auswahl ---
-        iso_frame = ttk.LabelFrame(outer, text="1. Windows-ISO-Datei", padding=12)
-        iso_frame.pack(fill="x", pady=(0, 12))
+        self.title_label = ttk.Label(header_row, text="", style="Title.TLabel")
+        self.title_label.pack(side="left")
 
-        iso_row = ttk.Frame(iso_frame)
+        lang_box = ttk.Frame(header_row)
+        lang_box.pack(side="right")
+        self.language_frame_label = ttk.Label(lang_box, text="")
+        self.language_frame_label.pack(side="left", padx=(0, 6))
+        self.language_var = tk.StringVar(value="Deutsch")
+        self.language_combo = ttk.Combobox(
+            lang_box, textvariable=self.language_var, state="readonly",
+            values=["Deutsch", "English"], width=10
+        )
+        self.language_combo.pack(side="left")
+        self.language_combo.bind("<<ComboboxSelected>>", self.on_language_changed)
+
+        # --- ISO-Auswahl / ISO selection ---
+        self.iso_frame = ttk.LabelFrame(outer, text="", padding=12)
+        self.iso_frame.pack(fill="x", pady=(0, 12))
+
+        iso_row = ttk.Frame(self.iso_frame)
         iso_row.pack(fill="x")
         self.iso_entry = ttk.Entry(iso_row, textvariable=self.iso_path, state="readonly")
         self.iso_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(iso_row, text="Durchsuchen…", command=self.select_iso).pack(side="left")
+        self.browse_button = ttk.Button(iso_row, text="", command=self.select_iso)
+        self.browse_button.pack(side="left")
 
-        # --- USB-Auswahl ---
-        usb_frame = ttk.LabelFrame(outer, text="2. Ziel-USB-Stick", padding=12)
-        usb_frame.pack(fill="x", pady=(0, 12))
+        # --- USB-Auswahl / USB selection ---
+        self.usb_frame = ttk.LabelFrame(outer, text="", padding=12)
+        self.usb_frame.pack(fill="x", pady=(0, 12))
 
-        usb_row = ttk.Frame(usb_frame)
+        usb_row = ttk.Frame(self.usb_frame)
         usb_row.pack(fill="x")
         self.disk_combo = ttk.Combobox(usb_row, textvariable=self.selected_disk, state="readonly")
         self.disk_combo.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(usb_row, text="Aktualisieren", command=self.refresh_disks).pack(side="left")
+        self.refresh_button = ttk.Button(usb_row, text="", command=self.refresh_disks)
+        self.refresh_button.pack(side="left")
 
-        warn = ttk.Label(
-            usb_frame,
-            text="⚠️ Alle Daten auf dem gewählten Datenträger werden gelöscht!",
-            foreground="#b00020",
-        )
-        warn.pack(anchor="w", pady=(8, 0))
+        self.warn_label = ttk.Label(self.usb_frame, text="", foreground="#b00020")
+        self.warn_label.pack(anchor="w", pady=(8, 0))
 
-        # --- Erstellen-Button ---
+        # --- Erstellen-Button / Create button ---
         self.create_button = ttk.Button(
-            outer, text="USB-Stick erstellen", style="Big.TButton",
+            outer, text="", style="Big.TButton",
             command=self.on_create_clicked
         )
         self.create_button.pack(fill="x", pady=(4, 16))
 
-        # --- Fortschritt ---
-        progress_frame = ttk.LabelFrame(outer, text="Fortschritt", padding=12)
-        progress_frame.pack(fill="both", expand=True)
+        # --- Fortschritt / Progress ---
+        self.progress_frame = ttk.LabelFrame(outer, text="", padding=12)
+        self.progress_frame.pack(fill="both", expand=True)
 
-        self.progress = ttk.Progressbar(progress_frame, mode="determinate", maximum=100)
+        self.progress = ttk.Progressbar(self.progress_frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(0, 10))
 
-        self.log_text = tk.Text(progress_frame, height=14, wrap="word", state="disabled",
+        self.log_text = tk.Text(self.progress_frame, height=14, wrap="word", state="disabled",
                                  background="#1e1e1e", foreground="#e0e0e0",
                                  insertbackground="#e0e0e0", font=("Menlo", 11))
         self.log_text.pack(fill="both", expand=True)
@@ -228,17 +414,11 @@ class WindowsUSBFlasherApp:
         log_scroll.pack(side="right", fill="y")
 
     def _show_wimlib_missing_error(self):
-        self.log("FEHLER: 'wimlib-imagex' wurde nicht gefunden.")
-        self.log("Bitte installieren Sie es zuerst über Homebrew:")
-        self.log("    brew install wimlib")
+        self.log(self.t("err_wimlib_log_1"))
+        self.log(self.t("err_wimlib_log_2"))
+        self.log(self.t("err_wimlib_log_3"))
         self.create_button.configure(state="disabled")
-        messagebox.showerror(
-            "Voraussetzung fehlt",
-            "Das Kommandozeilen-Tool 'wimlib-imagex' wurde nicht gefunden.\n\n"
-            "Bitte installieren Sie es zuerst mit Homebrew:\n\n"
-            "    brew install wimlib\n\n"
-            "und starten Sie diese Anwendung danach erneut."
-        )
+        messagebox.showerror(self.t("err_wimlib_title"), self.t("err_wimlib_body"))
 
     # ------------------------------------------------------------ Logging --
 
@@ -257,15 +437,18 @@ class WindowsUSBFlasherApp:
 
     def select_iso(self):
         path = filedialog.askopenfilename(
-            title="Windows-ISO auswählen",
-            filetypes=[("ISO-Dateien", "*.iso")]
+            title=self.t("select_iso_title"),
+            filetypes=[(self.t("iso_filetype"), "*.iso")]
         )
         if path:
             self.iso_path.set(path)
 
     def refresh_disks(self):
-        self.log("Suche nach externen USB-Datenträgern…")
-        disks = list_removable_disks()
+        self.log(self.t("searching_disks"))
+        disks = list_removable_disks(
+            unknown_label=self.t("unknown_disk_name"),
+            usb_label=self.t("usb_device_label"),
+        )
         self.disk_map = {}
         display_values = []
         for d in disks:
@@ -276,33 +459,31 @@ class WindowsUSBFlasherApp:
         self.disk_combo["values"] = display_values
         if display_values:
             self.disk_combo.current(0)
-            self.log(f"{len(display_values)} Datenträger gefunden.")
+            self.log(self.t("disks_found", count=len(display_values)))
         else:
             self.selected_disk.set("")
-            self.log("Keine externen, entfernbaren Datenträger gefunden.")
+            self.log(self.t("no_disks_found"))
 
     def on_create_clicked(self):
         iso = self.iso_path.get()
         disk_label = self.selected_disk.get()
 
         if not iso:
-            messagebox.showwarning("Fehlt", "Bitte zuerst eine Windows-ISO-Datei auswählen.")
+            messagebox.showwarning(self.t("missing_title"), self.t("missing_iso"))
             return
         if not disk_label or disk_label not in self.disk_map:
-            messagebox.showwarning("Fehlt", "Bitte zuerst einen Ziel-USB-Stick auswählen.")
+            messagebox.showwarning(self.t("missing_title"), self.t("missing_disk"))
             return
 
         disk_id = self.disk_map[disk_label]
 
         confirmed = messagebox.askyesno(
-            "Achtung — Datenverlust!",
-            f"Alle Daten auf '/dev/{disk_id}' ({disk_label}) werden "
-            "unwiderruflich GELÖSCHT.\n\n"
-            "Möchten Sie wirklich fortfahren?",
+            self.t("confirm_title"),
+            self.t("confirm_body", disk_id=disk_id, disk_label=disk_label),
             icon="warning"
         )
         if not confirmed:
-            self.log("Vorgang vom Benutzer abgebrochen.")
+            self.log(self.t("user_cancelled"))
             return
 
         self.create_button.configure(state="disabled")
@@ -318,22 +499,22 @@ class WindowsUSBFlasherApp:
     def run_flash_process(self, iso_path: str, disk_id: str):
         mounted_iso_path = None
         try:
-            # Schritt 1: Formatieren
-            self.log(f"Formatiere /dev/{disk_id} (GPT, FAT32, Name 'WINSETUP')…")
+            # Schritt 1: Formatieren / Step 1: format
+            self.log(self.t("step_format", disk_id=disk_id))
             self._run_command([
                 "diskutil", "partitionDisk", f"/dev/{disk_id}",
                 "GPT", "FAT32", "WINSETUP", "0b"
             ])
             self.set_progress(15)
 
-            # Schritt 2: ISO mounten
-            self.log(f"Mounte ISO: {iso_path}…")
+            # Schritt 2: ISO mounten / Step 2: mount ISO
+            self.log(self.t("step_mount", iso_path=iso_path))
             mounted_iso_path = self._mount_iso(iso_path)
-            self.log(f"ISO gemountet unter: {mounted_iso_path}")
+            self.log(self.t("step_mounted", mount_path=mounted_iso_path))
             self.set_progress(25)
 
-            # Schritt 3: rsync ohne install.wim
-            self.log("Kopiere Dateien (außer install.wim) auf den USB-Stick…")
+            # Schritt 3: rsync ohne install.wim / Step 3: rsync excluding install.wim
+            self.log(self.t("step_copy"))
             self._run_command([
                 "rsync", "-avh", "--progress",
                 "--exclude=/sources/install.wim",
@@ -341,63 +522,59 @@ class WindowsUSBFlasherApp:
             ], log_output=True)
             self.set_progress(65)
 
-            # Schritt 4: install.wim splitten
+            # Schritt 4: install.wim splitten / Step 4: split install.wim
             wim_source = os.path.join(mounted_iso_path, "sources", "install.wim")
             dest_dir = "/Volumes/WINSETUP/sources"
             os.makedirs(dest_dir, exist_ok=True)
             swm_dest = os.path.join(dest_dir, "install.swm")
 
-            self.log("Spalte install.wim in Teile < 3.8 GB (wimlib-imagex split)…")
+            self.log(self.t("step_split"))
             self._run_command([
                 "wimlib-imagex", "split", wim_source, swm_dest, "3800"
             ], log_output=True)
             self.set_progress(88)
 
-            # Schritt 4b: Verifikation der gesplitteten WIM-Dateien
-            self.log("Verifiziere install.swm (wimlib-imagex info)…")
+            # Schritt 4b: Verifikation / Step 4b: verification
+            self.log(self.t("step_verify"))
             try:
-                info_result = self._run_command(
+                self._run_command(
                     ["wimlib-imagex", "info", swm_dest], log_output=True
                 )
-                self.log("Verifikation erfolgreich: Split-WIM-Dateien sind konsistent.")
+                self.log(self.t("step_verify_ok"))
             except subprocess.CalledProcessError as verify_err:
                 error_output = (verify_err.stderr or verify_err.stdout or str(verify_err)).strip()
-                self.log("WARNUNG: Verifikation der install.swm fehlgeschlagen!")
+                self.log(self.t("step_verify_warn"))
                 self.log(error_output)
-                raise RuntimeError(
-                    "Die install.swm-Dateien konnten nicht verifiziert werden. "
-                    "Der USB-Stick ist möglicherweise nicht bootfähig."
-                )
+                raise RuntimeError(self.t("step_verify_fail_msg"))
             self.set_progress(90)
 
-            # Schritt 5: Auswerfen
-            self.log("Werfe ISO-Image aus…")
+            # Schritt 5: Auswerfen / Step 5: eject
+            self.log(self.t("step_unmount_iso"))
             self._run_command(["hdiutil", "unmount", mounted_iso_path])
             mounted_iso_path = None
 
-            self.log(f"Werfe USB-Stick /dev/{disk_id} sicher aus…")
+            self.log(self.t("step_eject_usb", disk_id=disk_id))
             self._run_command(["diskutil", "eject", f"/dev/{disk_id}"])
             self.set_progress(100)
 
-            # Schritt 6: Erfolg
-            self.log("Fertig! Der Windows-Installations-USB-Stick wurde erfolgreich erstellt.")
+            # Schritt 6: Erfolg / Step 6: success
+            self.log(self.t("step_done"))
             self.root.after(0, lambda: messagebox.showinfo(
-                "Erfolg",
-                "Der bootfähige Windows-USB-Stick wurde erfolgreich erstellt!"
+                self.t("success_title"), self.t("success_body")
             ))
 
         except subprocess.CalledProcessError as e:
             error_output = (e.stderr or e.stdout or str(e)).strip()
-            self.log(f"FEHLER bei Befehl: {' '.join(e.cmd)}")
+            self.log(self.t("error_command_log", cmd=" ".join(e.cmd)))
             self.log(error_output)
             self.root.after(0, lambda: messagebox.showerror(
-                "Fehler", f"Ein Befehl ist fehlgeschlagen:\n\n{error_output}"
+                self.t("error_title"), self.t("error_command_body", error=error_output)
             ))
         except Exception as e:
-            self.log(f"Unerwarteter Fehler: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Fehler", str(e)))
+            self.log(self.t("error_unexpected_log", error=e))
+            self.root.after(0, lambda: messagebox.showerror(self.t("error_title"), str(e)))
         finally:
-            # Best-effort Aufräumen, falls ISO noch gemountet ist
+            # Best-effort Aufräumen / best-effort cleanup
             if mounted_iso_path:
                 subprocess.run(["hdiutil", "unmount", mounted_iso_path],
                                 capture_output=True, text=True)
@@ -406,7 +583,8 @@ class WindowsUSBFlasherApp:
     # ------------------------------------------------------------ Helpers --
 
     def _run_command(self, cmd, log_output=False):
-        """Führt einen Befehl aus, wirft bei Fehler CalledProcessError."""
+        """[DE] Führt einen Befehl aus, wirft bei Fehler CalledProcessError.
+        [EN] Runs a command, raises CalledProcessError on failure."""
         self.log(f"$ {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True)
         if log_output and result.stdout:
@@ -419,7 +597,8 @@ class WindowsUSBFlasherApp:
         return result
 
     def _mount_iso(self, iso_path: str) -> str:
-        """Mountet die ISO via hdiutil und gibt den Mount-Pfad zurück."""
+        """[DE] Mountet die ISO via hdiutil und gibt den Mount-Pfad zurück.
+        [EN] Mounts the ISO via hdiutil and returns the mount path."""
         result = subprocess.run(
             ["hdiutil", "mount", iso_path],
             capture_output=True, text=True
@@ -429,10 +608,9 @@ class WindowsUSBFlasherApp:
                 result.returncode, ["hdiutil", "mount", iso_path],
                 output=result.stdout, stderr=result.stderr
             )
-        # Letzte Spalte der letzten Zeile enthält üblicherweise den Mount-Pfad
         match = re.search(r"(/Volumes/[^\n]+)", result.stdout)
         if not match:
-            raise RuntimeError("Mount-Pfad der ISO konnte nicht ermittelt werden.")
+            raise RuntimeError(self.t("mount_path_not_found"))
         return match.group(1).strip()
 
 
